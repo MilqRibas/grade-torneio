@@ -61,13 +61,8 @@
     const ITEMS_PER_PAGE = 15;
     const CACHE_DURATION = 5 * 60 * 1000;
 
-    const isMainEvent = (n) => {
-      const name = (n || '').toLowerCase();
-      return name.includes('main event') || name.includes(' me ') || name.includes('principal') || name.includes('m.e.') || name.includes('#sf') || name.includes('high roller') || name.includes('battle');
-    };
-
     const toBrasiliaTime = (dateStr) => {
-      if (!dateStr) return '--:--';
+      if (!dateStr || typeof dateStr !== 'string') return '--:--';
       try {
         const date = new Date(dateStr.includes('Z') || dateStr.includes('-') || dateStr.includes('T') ? dateStr : dateStr.replace(' ', 'T') + 'Z');
         return new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
@@ -84,7 +79,7 @@
     };
 
     const formatGTD = (val) => {
-       if (val === 0) return "---";
+       if (val === 0 || !val) return "---";
        if (val >= 1000000) {
          const millions = val / 1000000;
          return millions.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + "M";
@@ -102,13 +97,13 @@
     const FeaturedCarousel = ({ events }) => {
         const [currentIndex, setCurrentIndex] = useState(0);
         const featured = useMemo(() => {
-            let list = events.filter(e => isMainEvent(e.name) || e.guaranteed >= 50000);
+            let list = events.filter(e => e.isMainEvent || e.guaranteed >= 50000);
             if (list.length === 0) list = events.slice(0, 5);
             return list.sort((a,b) => b.guaranteed - a.guaranteed).slice(0, 5);
         }, [events]);
 
-        // Dependência currentIndex adicionada para resetar timer ao clicar
         useEffect(() => {
+            if (featured.length <= 1) return;
             const timer = setInterval(() => setCurrentIndex((prev) => (prev + 1) % featured.length), 5000);
             return () => clearInterval(timer);
         }, [featured, currentIndex]);
@@ -160,7 +155,7 @@
       const [currentPage, setCurrentPage] = useState(1);
       const [selectedDate, setSelectedDate] = useState(() => {
           const now = new Date();
-          now.setHours(now.getHours() - 3); // Fuso de Brasília base
+          now.setHours(now.getHours() - 3);
           return now.toISOString().split('T')[0];
       });
       
@@ -205,7 +200,7 @@
           if (!res.ok) throw new Error("Falha de requisição da API");
           
           const json = await res.json();
-          const rawList = Array.isArray(json) ? json : Object.values(json).find(Array.isArray) || [];
+          const rawList = json.data ? json.data : (Array.isArray(json) ? json : Object.values(json).find(Array.isArray) || []);
           
           const list = rawList.map(item => ({
             id: item.id || Math.random(),
@@ -216,14 +211,16 @@
             stack: item.stack || '--',
             blinds: item.temponivelmMeta ? item.temponivelmMeta + 'm' : '--',
             lateReg: item.late || '',
-            type: item.type || 'NLH'
+            type: item.type || 'NLH',
+            // Checagem segura (case-insensitive) para evitar falhas se a API mandar texto minúsculo
+            isMainEvent: (item.tournament && typeof item.tournament === 'string' && item.tournament.toLowerCase().includes('main event'))
           })).filter(t => t.startTime.startsWith(date));
           
           localStorage.setItem(cacheKey, JSON.stringify({ timestamp: Date.now(), list }));
           setData(list);
         } catch (e) {
           console.error("Erro ao buscar dados da API: ", e);
-          setData([]); // Previne quebra de layout mantendo array vazio
+          setData([]); 
         }
         setLoading(false);
       };
@@ -233,10 +230,6 @@
       const sortedData = useMemo(() => {
         const filtered = data.filter(t => t.name.toLowerCase().includes(search.toLowerCase()));
         return filtered.sort((a, b) => {
-          const aMain = isMainEvent(a.name);
-          const bMain = isMainEvent(b.name);
-          if (aMain && !bMain) return -1;
-          if (!aMain && bMain) return 1;
           return getTimeWeight(toBrasiliaTime(a.startTime)) - getTimeWeight(toBrasiliaTime(b.startTime));
         });
       }, [data, search]);
@@ -245,8 +238,6 @@
       const paginated = sortedData.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
       
       const currentDayInfo = weekDates.find(d => d.iso === selectedDate) || { fullDayName: 'HOJE', dayNum: '' };
-      
-      // LÓGICA DE DATA CORRIGIDA (Ignora fuso horário e pega o texto real selecionado)
       const [yearStr, monthStr, dayStr] = selectedDate.split('-');
       const formattedDate = `${dayStr}/${monthStr}/${yearStr}`;
 
@@ -255,7 +246,6 @@
           
           {!loading && data.length > 0 && <FeaturedCarousel events={data} />}
 
-          {/* ALINHAMENTO MOBILE CORRIGIDO (items-start e mt-2) */}
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-6 w-full">
             <div className="flex flex-col">
                  <h1 className="text-4xl md:text-6xl font-black italic uppercase tracking-tighter text-white leading-none mb-2">
@@ -306,32 +296,23 @@
                   ) : paginated.length === 0 ? (
                       <tr><td colSpan="8" className="p-10 text-center text-white/50 font-bold text-sm">Nenhum torneio encontrado para esta data.</td></tr>
                   ) : paginated.map(t => {
-                    const main = isMainEvent(t.name);
+                    const main = t.isMainEvent;
                     
-                    {/* TR TRATADO: Fundo azul e sombra interna para Main Events */}
                     return (
                       <tr key={t.id} className={`${main ? 'bg-[#39bcff]/10 shadow-[inset_4px_0_0_0_#39bcff] hover:bg-[#39bcff]/20' : 'hover:bg-white/5'} transition-colors`}>
-                        
-                        {/* CORES DINÂMICAS: Tudo azul se for main */}
                         <td className={`px-3 py-4 text-center text-[12px] tabular-nums font-bold ${main ? 'text-[#39bcff]' : 'text-white/40'}`}>{toBrasiliaTime(t.startTime)}</td>
-                        
                         <td className="px-3 py-4 overflow-hidden">
                           <div className="flex items-center gap-1.5">
                             {main && <Trophy className="w-4 h-4 text-[#39bcff] flex-shrink-0 drop-shadow-[0_0_5px_rgba(57,188,255,0.3)]"/>}
                             <span className={`font-black uppercase text-[13px] md:text-[15px] truncate ${main ? 'text-[#39bcff]' : 'text-white'}`}>{t.name}</span>
                           </div>
                         </td>
-                        
                         <td className="px-1 py-4 text-left font-black italic text-[18px] md:text-[22px] tracking-tighter leading-none">
-                          <span className={main ? 'text-[#39bcff] drop-shadow-[0_0_8px_rgba(57,188,255,0.4)]' : 'text-white'}>
-                            {formatGTD(t.guaranteed)}
-                          </span>
+                          <span className={main ? 'text-[#39bcff] drop-shadow-[0_0_8px_rgba(57,188,255,0.4)]' : 'text-white'}>{formatGTD(t.guaranteed)}</span>
                         </td>
-                        
                         <td className="px-2 py-4 text-center">
                             <span className={`px-2 py-0.5 rounded text-[8px] font-black border uppercase ${main ? 'text-[#39bcff] border-[#39bcff]/40 bg-[#39bcff]/10' : 'text-white/20 border-white/10'}`}>{t.type}</span>
                         </td>
-                        
                         <td className={`px-3 py-4 text-center text-[12px] font-bold tabular-nums ${main ? 'text-[#39bcff]' : 'text-white/50'}`}>R$ {t.totalBuyIn.toLocaleString('pt-BR', {minimumFractionDigits:2})}</td>
                         <td className={`px-2 py-4 text-center text-[10px] md:text-[11px] font-bold ${main ? 'text-[#39bcff]/80' : 'text-white/30'}`}>{t.blinds}</td>
                         <td className={`px-3 py-4 text-center text-[11px] md:text-[13px] font-black tabular-nums ${main ? 'text-[#39bcff]/80' : 'text-white/30'}`}>{formatStack(t.stack)}</td>
@@ -343,12 +324,12 @@
               </table>
             </div>
 
-            {/* PAGINAÇÃO INTEGRADA AO RODAPÉ DA TABELA */}
+            {/* ADICIONADO: flex-wrap para evitar quebra horizontal no mobile */}
             {totalPages > 1 && (
-                <div className="border-t border-white/5 bg-[#111] p-4 flex items-center justify-center space-x-2">
+                <div className="border-t border-white/5 bg-[#111] p-4 flex flex-wrap items-center justify-center gap-2">
                     <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="p-2 rounded-lg bg-white/5 border border-white/10 disabled:opacity-20 hover:bg-white/10 text-white transition-all"><ChevronLeft className="w-4 h-4"/></button>
                     {[...Array(totalPages)].map((_, i) => (
-                        <button key={i} onClick={() => setCurrentPage(i+1)} className={`w-8 h-8 rounded-lg font-black text-[11px] transition-all ${currentPage === i+1 ? 'bg-[#39bcff] text-black shadow-[0_0_10px_rgba(57,188,255,0.3)]' : 'bg-white/5 text-white/40 hover:bg-white/10'}`}>{i+1}</button>
+                        <button key={i} onClick={() => setCurrentPage(i+1)} className={`w-8 h-8 rounded-lg font-black text-[11px] flex-shrink-0 transition-all ${currentPage === i+1 ? 'bg-[#39bcff] text-black shadow-[0_0_10px_rgba(57,188,255,0.3)]' : 'bg-white/5 text-white/40 hover:bg-white/10'}`}>{i+1}</button>
                     ))}
                     <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="p-2 rounded-lg bg-white/5 border border-white/10 disabled:opacity-20 hover:bg-white/10 text-white transition-all"><ChevronRight className="w-4 h-4"/></button>
                 </div>
